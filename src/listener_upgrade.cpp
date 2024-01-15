@@ -92,12 +92,15 @@ int ABS(int x) {
 
 // heuristic function for A* algorithm
 double Heuristic(const int& idx, std::string type = "Manhattan") {
-  const double constant = 1;
+  const double constant = 0.1;
   if (type == "Chebyshev") {
     return constant * std::max(ABS(ToPare(idx).first - ToPare(ToIndex(goal)).first), ABS(ToPare(idx).second - ToPare(ToIndex(goal)).second));
   }
   if (type == "Manhattan") {
     return constant * ABS(ToPare(idx).first - ToPare(ToIndex(goal)).first) + ABS(ToPare(idx).second - ToPare(ToIndex(goal)).second);
+  }
+  if (type == "Zero") {
+    return 0;
   }
   return constant * Weight(idx, ToIndex(goal));
 }
@@ -108,6 +111,20 @@ struct Compare {
     return (left.second > right.second);
   }
 };
+
+// bool function-indicator of a wall pixel
+bool WallIndicator(int u) {
+  int delta_step = 1;
+  for (int dx = -delta_step; dx <= delta_step; ++dx) {
+    for (int dy = -delta_step; dy <= delta_step; ++dy) {
+      int v = ToIndex(ToPare(u).first + dx, ToPare(u).second + dy);
+      if (v >= 0 && v < width * height && grid_map[v] == 100) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
 
 // upgrade of a map for dist
 class MapDist {
@@ -172,7 +189,7 @@ void ListenerLogic(const geometry_msgs::PoseStamped::ConstPtr& msg) {
   int count = 0;
   bool miss_goal = true;
   // A* work cycle
-  while (!que.empty() && miss_goal) {
+  while (!que.empty() && miss_goal && WallIndicator(ToIndex(goal))) {
     ++count;
     int u = que.top().first;
     que.pop();
@@ -183,8 +200,11 @@ void ListenerLogic(const geometry_msgs::PoseStamped::ConstPtr& msg) {
     }
     for (int dx = -delta_step; dx <= delta_step && miss_goal; ++dx) {
       for (int dy = -delta_step; dy <= delta_step && miss_goal; ++dy) {
+        if (dx == 0 && dy == 0) {
+          continue; // checking v != u
+        }
         int v = ToIndex(ToPare(u).first + dx, ToPare(u).second + dy);
-        if (v >= 0 && v < width * height && grid_map[v] < 100 && (grid_map[v] > -1 || out_box)) {
+        if (WallIndicator(v) && (grid_map[v] > -1 || out_box)) {
           double weight = Weight(u, v);
           if (dist[v] > dist[u] + weight) {
             dist[v] = dist[u] + weight;
