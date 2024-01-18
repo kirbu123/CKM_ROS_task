@@ -6,6 +6,7 @@
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <queue>
+#include <set>
 #include <std_msgs/Float64.h>
 #include <vector>
 
@@ -82,15 +83,79 @@ double Weight(const int& first, const int& second) {
   return result;
 }
 
+// abs function
+int ABS(int x) {
+  if (x < 0) {
+    return -x;
+  }
+  return x;
+}
+
 // heuristic function for A* algorithm
-double Heuristic(const int& idx) {
-  return Weight(idx, ToIndex(goal));
+double Heuristic(const int& idx, std::string type = "Manhattan") {
+  const double constant = 0.2;
+  if (type == "Chebyshev") {
+    return constant * std::max(ABS(ToPare(idx).first - ToPare(ToIndex(goal)).first), ABS(ToPare(idx).second - ToPare(ToIndex(goal)).second));
+  }
+  if (type == "Manhattan") {
+    return constant * ABS(ToPare(idx).first - ToPare(ToIndex(goal)).first) + ABS(ToPare(idx).second - ToPare(ToIndex(goal)).second);
+  }
+  if (type == "Zero") {
+    return 0;
+  }
+  return constant * Weight(idx, ToIndex(goal));
 }
 
 // A* priority queue comparator struct
 struct Compare {
   bool operator()(const std::pair<int, double>& left, const std::pair<int, double>& right) {
     return (left.second > right.second);
+  }
+};
+
+// bool function-indicator of a wall pixel
+bool WallIndicator(int u) {
+  int delta_step = 1;
+  for (int dx = -delta_step; dx <= delta_step; ++dx) {
+    for (int dy = -delta_step; dy <= delta_step; ++dy) {
+      int v = ToIndex(ToPare(u).first + dx, ToPare(u).second + dy);
+      if (v >= 0 && v < width * height && grid_map[v] == 100) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// upgrade of a map for dist
+class MapDist {
+ private:
+  std::map<int, double> map;
+  double kInf = 10000000;
+
+ public:
+  MapDist() = default;
+  double& operator[](const int& key) {
+    if (map.find(key) == map.end()) {
+      map[key] = kInf;
+    }
+    return map[key];
+  }
+};
+
+// upgrade of a map for parent
+class MapParent {
+ private:
+  std::map<int, int> map;
+  int default_parent = -1;
+
+ public:
+  MapParent() = default;
+  int& operator[](const int& key) {
+    if (map.find(key) == map.end()) {
+      map[key] = default_parent;
+    }
+    return map[key];
   }
 };
 
@@ -108,38 +173,53 @@ void ListenerLogic(const geometry_msgs::PoseStamped::ConstPtr& msg) {
   std::cout << "Y: " << odom.pose.pose.position.y << ' ';
   std::cout << "Z: " << odom.pose.pose.position.z << '\n';
 
+  // logic constant for going out of map
+  const bool out_box = true;
+  // maximum difference of one step vision
+  const int delta_step = 1;
   // starting time count
   ros::Time start_time = ros::Time::now();
   // define infinity of weights
-  int kInf = 10000000;
-  std::vector<int> dist(width * height, kInf);
-  std::vector<int> parent(width * height, -1);
-  std::priority_queue<std::pair<int, double>, std::vector<std::pair<int, double>>, Compare> que;
+  MapDist dist;
+  MapParent parent;
+  std::set<std::pair<double, int>> open;
+  std::set<int> closed;
   dist[ToIndex(odom)] = 0;
-  que.push(std::pair<int, double>(ToIndex(odom), Heuristic(ToIndex(odom))));
+  open.insert(std::pair<int, double>(Heuristic(ToIndex(odom)), ToIndex(odom)));
   parent[ToIndex(odom)] = ToIndex(odom);
+  std::cout << "Finall distance: " << Weight(ToIndex(odom), ToIndex(goal)) << '\n';
   std::cout << "Start process...\n";
   int count = 0;
   bool miss_goal = true;
   // A* work cycle
-  while (!que.empty() && miss_goal) {
+  while (!open.empty() && WallIndicator(ToIndex(goal))) {
     ++count;
-    int u = que.top().first;
-    que.pop();
+    int u = open.begin()->second;
+    if (open.begin()->first > Heuristic(u) + dist[u]) {
+      open.erase(*open.begin());
+      continue;
+    }
+    open.erase(*open.begin());
+    closed.insert(u);
     // checking goal point touch
     if (u == ToIndex(goal)) {
       miss_goal = false;
       break;
     }
-    for (int dx = -1; dx <= 1 && miss_goal; ++dx) {
-      for (int dy = -1; dy <= 1 && miss_goal; ++dy) {
+    for (int dx = -delta_step; dx <= delta_step; ++dx) {
+      for (int dy = -delta_step; dy <= delta_step; ++dy) {
+        if (dx == 0 && dy == 0) {
+          continue; // checking v != u
+        }
         int v = ToIndex(ToPare(u).first + dx, ToPare(u).second + dy);
-        if (v >= 0 && v < width * height && grid_map[v] < 100 && grid_map[v] > -1) {
-          double weight = Weight(u, v);
-          if (dist[v] > dist[u] + weight) {
-            dist[v] = dist[u] + weight;
-            que.push(std::pair<int, double>(v, Heuristic(v) + dist[v]));
+        if (WallIndicator(v) && (grid_map[v] > -1 || out_box)) {
+          double tentativeScore = dist[u] + Weight(u, v);
+          if (closed.find(v) == closed.end() && tentativeScore < dist[v]) {
             parent[v] = u;
+            dist[v] = tentativeScore;
+            if (open.find(std::pair<int, double>(Heuristic(v) + dist[v], v)) == open.end()) {
+              open.insert(std::pair<int, double>(Heuristic(v) + dist[v], v));
+            }
           }
         }
       }
@@ -154,9 +234,9 @@ void ListenerLogic(const geometry_msgs::PoseStamped::ConstPtr& msg) {
       // creating dot for the path
       geometry_msgs::PoseStamped dot;
       dot.pose.position.x = ToXY(v).first;
-      std::cout << ToXY(v).first << ' ';
+      // std::cout << ToXY(v).first << ' ';
       dot.pose.position.y = ToXY(v).second;
-      std::cout  << ToXY(v).second << '\n';
+      // std::cout  << ToXY(v).second << '\n';
       // dot.pose.orientation.w = 1.0;
       reverse_path.emplace_back(dot);
     }
